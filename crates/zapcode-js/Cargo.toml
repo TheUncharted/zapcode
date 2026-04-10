@@ -12,7 +12,7 @@ crate-type = ["cdylib"]
 [dependencies]
 zapcode-core = { path = "../zapcode-core" }
 napi = { version = "2", features = ["napi9", "serde-json"] }
-napi-derive = "2"
+napi-derive = { version = "2", default-features = false, features = ["compat-mode", "strict"] }
 serde_json = "1"
 
 [build-dependencies]

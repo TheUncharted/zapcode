@@ -54,7 +54,7 @@
         "packageName": "@unchartedfr/zapcode"
     },
     "scripts": {
-        "build": "napi build --release --platform --js index.js --dts index.d.ts",
+        "build": "napi build --release --platform --js index.js",
         "prepublishOnly": "napi prepublish -t npm",
         "artifacts": "napi artifacts"
     },

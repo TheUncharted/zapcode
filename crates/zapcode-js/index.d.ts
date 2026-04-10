@@ -11,10 +11,21 @@ export interface ZapcodeSessionOptions {
   timeLimitMs?: number;
 }
 
+export interface ZapcodeTraceSpan {
+  name: string;
+  startTimeMs: number;
+  endTimeMs: number;
+  durationUs: number;
+  status: string;
+  attributes: string[][];
+  children: ZapcodeTraceSpan[];
+}
+
 export interface ZapcodeResult {
   completed: true;
   output: unknown;
   stdout: string;
+  trace: ZapcodeTraceSpan;
 }
 
 export interface ZapcodeSuspension {
