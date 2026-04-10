@@ -1544,7 +1544,7 @@ dependencies = [
 
 [[package]]
 name = "zapcode-core"
-version = "1.0.1"
+version = "1.5.1"
 dependencies = [
  "divan",
  "indexmap",
@@ -1561,7 +1561,7 @@ dependencies = [
 
 [[package]]
 name = "zapcode-js"
-version = "1.0.1"
+version = "1.5.1"
 dependencies = [
  "napi",
  "napi-build",
@@ -1572,7 +1572,7 @@ dependencies = [
 
 [[package]]
 name = "zapcode-py"
-version = "1.0.1"
+version = "1.5.1"
 dependencies = [
  "indexmap",
  "pyo3",
@@ -1581,7 +1581,7 @@ dependencies = [
 
 [[package]]
 name = "zapcode-wasm"
-version = "1.0.1"
+version = "1.5.1"
 dependencies = [
  "indexmap",
  "js-sys",

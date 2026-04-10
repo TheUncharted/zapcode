@@ -29,12 +29,15 @@ pub enum Value {
 
 /// Identifies a function in the compiled program.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct FunctionId(pub usize);
+pub struct FunctionRef {
+    pub program_id: usize,
+    pub function_id: usize,
+}
 
 /// A closure captures the enclosing scope's variables.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Closure {
-    pub func_id: FunctionId,
+    pub func_ref: FunctionRef,
     pub captured: Vec<(String, Value)>,
 }
 
@@ -44,7 +47,7 @@ pub struct GeneratorObject {
     /// Unique ID for this generator instance (used as key in VM generator registry).
     pub id: u64,
     /// The function this generator was created from.
-    pub func_id: FunctionId,
+    pub func_ref: FunctionRef,
     /// Captured closure variables.
     pub captured: Vec<(String, Value)>,
     /// Suspended execution state. None = not yet started.
