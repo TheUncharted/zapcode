@@ -6,7 +6,7 @@ use napi_derive::napi;
 
 use zapcode_core::{
     ExecutionTrace, ResourceLimits, TraceSpan, TraceStatus, Value, VmState, ZapcodeRun,
-    ZapcodeSnapshot,
+    ZapcodeSessionSnapshot, ZapcodeSessionState, ZapcodeSnapshot,
 };
 
 // ---------------------------------------------------------------------------
@@ -17,6 +17,16 @@ use zapcode_core::{
 pub struct ZapcodeOptions {
     /// Variable names injected at runtime.
     pub inputs: Option<Vec<String>>,
+    /// Function names the sandbox may call.
+    pub external_functions: Option<Vec<String>>,
+    /// Memory limit in megabytes (default: 32).
+    pub memory_limit_mb: Option<u32>,
+    /// Execution time limit in milliseconds (default: 5000).
+    pub time_limit_ms: Option<u32>,
+}
+
+#[napi(object)]
+pub struct ZapcodeSessionOptions {
     /// Function names the sandbox may call.
     pub external_functions: Option<Vec<String>>,
     /// Memory limit in megabytes (default: 32).
@@ -62,6 +72,32 @@ pub struct ZapcodeSuspension {
     pub args: Vec<serde_json::Value>,
     /// Opaque snapshot bytes -- pass to `ZapcodeSnapshotHandle.load()` to resume.
     pub snapshot: Buffer,
+}
+
+#[napi(object)]
+pub struct ZapcodeSessionResult {
+    /// Whether execution completed. Always true for this type.
+    pub completed: bool,
+    /// The output value, converted to a JSON-compatible serde_json::Value.
+    pub output: serde_json::Value,
+    /// Captured stdout output for this chunk/resume step.
+    pub stdout: String,
+    /// Opaque session bytes -- pass to `ZapcodeSessionHandle.load()` to continue.
+    pub session: Buffer,
+}
+
+#[napi(object)]
+pub struct ZapcodeSessionSuspension {
+    /// Whether execution completed. Always false for this type.
+    pub completed: bool,
+    /// Name of the external function that caused suspension.
+    pub function_name: String,
+    /// Arguments passed to the external function.
+    pub args: Vec<serde_json::Value>,
+    /// Captured stdout output for this chunk/resume step.
+    pub stdout: String,
+    /// Opaque session bytes -- pass to `ZapcodeSessionHandle.load()` to continue.
+    pub session: Buffer,
 }
 
 // ---------------------------------------------------------------------------
@@ -125,6 +161,79 @@ impl ZapcodeSnapshotHandle {
 }
 
 // ---------------------------------------------------------------------------
+// Ongoing session handle
+// ---------------------------------------------------------------------------
+
+#[napi]
+pub struct ZapcodeSessionHandle {
+    inner: ZapcodeSessionSnapshot,
+}
+
+#[napi]
+impl ZapcodeSessionHandle {
+    #[napi(factory)]
+    pub fn create(options: Option<ZapcodeSessionOptions>) -> napi::Result<Self> {
+        let opts = options.unwrap_or(ZapcodeSessionOptions {
+            external_functions: None,
+            memory_limit_mb: None,
+            time_limit_ms: None,
+        });
+
+        let limits = resource_limits_from_session_options(&opts);
+        let inner =
+            ZapcodeSessionSnapshot::new(opts.external_functions.unwrap_or_default(), limits)
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+
+        Ok(Self { inner })
+    }
+
+    #[napi(factory)]
+    pub fn load(bytes: Buffer) -> napi::Result<Self> {
+        let inner = ZapcodeSessionSnapshot::load(&bytes)
+            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        Ok(Self { inner })
+    }
+
+    #[napi]
+    pub fn dump(&self) -> napi::Result<Buffer> {
+        let bytes = self
+            .inner
+            .dump()
+            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        Ok(Buffer::from(bytes))
+    }
+
+    #[napi(ts_return_type = "ZapcodeSessionResult | ZapcodeSessionSuspension")]
+    pub fn run_chunk(
+        &self,
+        code: String,
+        inputs: Option<HashMap<String, serde_json::Value>>,
+    ) -> napi::Result<Either<ZapcodeSessionResult, ZapcodeSessionSuspension>> {
+        let input_values = inputs_to_vec(inputs);
+        let state = self
+            .inner
+            .run_chunk(code, input_values)
+            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+
+        session_state_to_either(state)
+    }
+
+    #[napi(ts_return_type = "ZapcodeSessionResult | ZapcodeSessionSuspension")]
+    pub fn resume(
+        &self,
+        return_value: serde_json::Value,
+    ) -> napi::Result<Either<ZapcodeSessionResult, ZapcodeSessionSuspension>> {
+        let value = json_to_value(&return_value);
+        let state = self
+            .inner
+            .resume(value)
+            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+
+        session_state_to_either(state)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Main Zapcode class
 // ---------------------------------------------------------------------------
 
@@ -144,13 +253,7 @@ impl Zapcode {
             time_limit_ms: None,
         });
 
-        let mut limits = ResourceLimits::default();
-        if let Some(mb) = opts.memory_limit_mb {
-            limits.memory_limit_bytes = (mb as usize) * 1024 * 1024;
-        }
-        if let Some(ms) = opts.time_limit_ms {
-            limits.time_limit_ms = ms as u64;
-        }
+        let limits = resource_limits_from_options(&opts);
 
         let inner = ZapcodeRun::new(
             code,
@@ -221,6 +324,28 @@ fn inputs_to_vec(inputs: Option<HashMap<String, serde_json::Value>>) -> Vec<(Str
         .into_iter()
         .map(|(k, v)| (k, json_to_value(&v)))
         .collect()
+}
+
+fn resource_limits_from_options(opts: &ZapcodeOptions) -> ResourceLimits {
+    let mut limits = ResourceLimits::default();
+    if let Some(mb) = opts.memory_limit_mb {
+        limits.memory_limit_bytes = (mb as usize) * 1024 * 1024;
+    }
+    if let Some(ms) = opts.time_limit_ms {
+        limits.time_limit_ms = ms as u64;
+    }
+    limits
+}
+
+fn resource_limits_from_session_options(opts: &ZapcodeSessionOptions) -> ResourceLimits {
+    let mut limits = ResourceLimits::default();
+    if let Some(mb) = opts.memory_limit_mb {
+        limits.memory_limit_bytes = (mb as usize) * 1024 * 1024;
+    }
+    if let Some(ms) = opts.time_limit_ms {
+        limits.time_limit_ms = ms as u64;
+    }
+    limits
 }
 
 /// Convert a `serde_json::Value` to a `zapcode_core::Value`.
@@ -329,6 +454,45 @@ fn vm_state_to_either(
                 function_name,
                 args: args.iter().map(value_to_json).collect(),
                 snapshot: Buffer::from(snap_bytes),
+            }))
+        }
+    }
+}
+
+fn session_state_to_either(
+    state: ZapcodeSessionState,
+) -> napi::Result<Either<ZapcodeSessionResult, ZapcodeSessionSuspension>> {
+    match state {
+        ZapcodeSessionState::Complete {
+            output,
+            stdout,
+            session,
+        } => {
+            let bytes = session
+                .dump()
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            Ok(Either::A(ZapcodeSessionResult {
+                completed: true,
+                output: value_to_json(&output),
+                stdout,
+                session: Buffer::from(bytes),
+            }))
+        }
+        ZapcodeSessionState::Suspended {
+            function_name,
+            args,
+            stdout,
+            session,
+        } => {
+            let bytes = session
+                .dump()
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            Ok(Either::B(ZapcodeSessionSuspension {
+                completed: false,
+                function_name,
+                args: args.iter().map(value_to_json).collect(),
+                stdout,
+                session: Buffer::from(bytes),
             }))
         }
     }

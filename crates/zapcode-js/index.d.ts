@@ -5,6 +5,12 @@ export interface ZapcodeOptions {
   timeLimitMs?: number;
 }
 
+export interface ZapcodeSessionOptions {
+  externalFunctions?: string[];
+  memoryLimitMb?: number;
+  timeLimitMs?: number;
+}
+
 export interface ZapcodeResult {
   completed: true;
   output: unknown;
@@ -18,10 +24,36 @@ export interface ZapcodeSuspension {
   snapshot: Buffer;
 }
 
+export interface ZapcodeSessionResult {
+  completed: true;
+  output: unknown;
+  stdout: string;
+  session: Buffer;
+}
+
+export interface ZapcodeSessionSuspension {
+  completed: false;
+  functionName: string;
+  args: unknown[];
+  stdout: string;
+  session: Buffer;
+}
+
 export class ZapcodeSnapshotHandle {
   static load(bytes: Buffer): ZapcodeSnapshotHandle;
   dump(): Buffer;
   resume(returnValue: unknown): ZapcodeResult | ZapcodeSuspension;
+}
+
+export class ZapcodeSessionHandle {
+  static create(options?: ZapcodeSessionOptions): ZapcodeSessionHandle;
+  static load(bytes: Buffer): ZapcodeSessionHandle;
+  dump(): Buffer;
+  runChunk(
+    code: string,
+    inputs?: Record<string, unknown>
+  ): ZapcodeSessionResult | ZapcodeSessionSuspension;
+  resume(returnValue: unknown): ZapcodeSessionResult | ZapcodeSessionSuspension;
 }
 
 export class Zapcode {
