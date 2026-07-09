@@ -203,6 +203,25 @@ impl Vm {
             .ok_or_else(|| ZapcodeError::RuntimeError("stack underflow".to_string()))
     }
 
+    /// Write a value back to the variable a method receiver was loaded from.
+    /// Used to give value-typed arrays/objects reference-like mutation semantics
+    /// for in-place methods (e.g. `arr.push(x)`) and `this` mutation.
+    fn write_back_receiver(&mut self, source: &ReceiverSource, value: Value) {
+        match source {
+            ReceiverSource::Global(name) => {
+                self.globals.insert(name.clone(), value);
+            }
+            ReceiverSource::Local { frame_index, slot } => {
+                if let Some(target_frame) = self.frames.get_mut(*frame_index) {
+                    while target_frame.locals.len() <= *slot {
+                        target_frame.locals.push(Value::Undefined);
+                    }
+                    target_frame.locals[*slot] = value;
+                }
+            }
+        }
+    }
+
     fn peek(&self) -> Result<&Value> {
         self.stack
             .last()
@@ -1622,6 +1641,21 @@ impl Vm {
                     } => {
                         let receiver = self.last_receiver.take();
                         let result = match object_name.as_ref() {
+                            "__array__" if builtins::is_mutating_array_method(&method_name) => {
+                                // Owned in-place mutation, then write the result
+                                // back to the receiver variable (arrays are
+                                // value-typed on the stack).
+                                if let Some(Value::Array(mut arr)) = receiver {
+                                    let ret =
+                                        builtins::call_array_mutator(&mut arr, &method_name, &args);
+                                    if let Some(source) = self.last_receiver_source.take() {
+                                        self.write_back_receiver(&source, Value::Array(arr));
+                                    }
+                                    ret
+                                } else {
+                                    None
+                                }
+                            }
                             "__array__" => {
                                 if let Some(Value::Array(arr)) = &receiver {
                                     // Check if this is a callback method first

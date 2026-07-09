@@ -226,3 +226,49 @@ fn test_if_block_with_user_function_and_object_arg() {
     let result = eval_ts("function f(x){ return x; }\nif (true) { f({ a: 1 }); }").unwrap();
     assert_eq!(result, Value::Undefined);
 }
+// ── in-place array mutation (regression: push/pop/etc. never persisted) ──────
+
+#[test]
+fn test_push_persists() {
+    let r = eval_ts("const a = []; a.push(1); a.push(2, 3); a.join(',')").unwrap();
+    assert_eq!(r, Value::String("1,2,3".into()));
+}
+
+#[test]
+fn test_push_in_loop_builds_array() {
+    let r =
+        eval_ts("const a = []; for (const n of [1, 2, 3]) { a.push(n * 2); } a.join(',')").unwrap();
+    assert_eq!(r, Value::String("2,4,6".into()));
+}
+
+#[test]
+fn test_pop_shift_unshift() {
+    let r =
+        eval_ts("const a = [1, 2]; a.unshift(0); const p = a.pop(); a.shift(); [p, a.join(',')]")
+            .unwrap();
+    match r {
+        Value::Array(v) => {
+            assert_eq!(v[0], Value::Int(2));
+            assert_eq!(v[1], Value::String("1".into()));
+        }
+        other => panic!("expected array, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_reverse_in_place() {
+    let r = eval_ts("const a = [1, 2, 3]; a.reverse(); a.join(',')").unwrap();
+    assert_eq!(r, Value::String("3,2,1".into()));
+}
+
+#[test]
+fn test_splice_mutates_and_returns_removed() {
+    let r = eval_ts("const a = [1, 2, 3, 4]; const removed = a.splice(1, 2, 'x'); removed.join(',') + '|' + a.join(',')").unwrap();
+    assert_eq!(r, Value::String("2,3|1,x,4".into()));
+}
+
+#[test]
+fn test_fill_in_place() {
+    let r = eval_ts("const a = [1, 2, 3]; a.fill(0, 1); a.join(',')").unwrap();
+    assert_eq!(r, Value::String("1,0,0".into()));
+}

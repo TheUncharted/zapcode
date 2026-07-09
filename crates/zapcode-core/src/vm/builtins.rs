@@ -707,6 +707,86 @@ fn call_array_method(arr: &[Value], method: &str, args: &[Value]) -> Result<Opti
     Ok(Some(result))
 }
 
+/// True for array methods that mutate the receiver in place. These are dispatched
+/// through [`call_array_mutator`] so the mutation is written back to the source
+/// variable (arrays are value-typed on the VM stack).
+pub(crate) fn is_mutating_array_method(method: &str) -> bool {
+    matches!(
+        method,
+        "push" | "pop" | "shift" | "unshift" | "splice" | "reverse" | "fill"
+    )
+}
+
+/// Apply an in-place array mutation, returning the method's JS result value.
+/// The caller is responsible for writing `arr` back to the receiver variable.
+pub(crate) fn call_array_mutator(
+    arr: &mut Vec<Value>,
+    method: &str,
+    args: &[Value],
+) -> Option<Value> {
+    let result = match method {
+        "push" => {
+            arr.extend(args.iter().cloned());
+            Value::Int(arr.len() as i64)
+        }
+        "pop" => arr.pop().unwrap_or(Value::Undefined),
+        "shift" => {
+            if arr.is_empty() {
+                Value::Undefined
+            } else {
+                arr.remove(0)
+            }
+        }
+        "unshift" => {
+            for (i, a) in args.iter().enumerate() {
+                arr.insert(i, a.clone());
+            }
+            Value::Int(arr.len() as i64)
+        }
+        "reverse" => {
+            arr.reverse();
+            Value::Array(arr.clone())
+        }
+        "fill" => {
+            let len = arr.len();
+            let fill_val = args.first().cloned().unwrap_or(Value::Undefined);
+            let start = if args.len() > 1 {
+                normalize_index(arg_int(args, 1), len as i64)
+            } else {
+                0
+            };
+            let end = if args.len() > 2 {
+                normalize_index(arg_int(args, 2), len as i64)
+            } else {
+                len
+            };
+            for item in arr.iter_mut().take(end.min(len)).skip(start) {
+                *item = fill_val.clone();
+            }
+            Value::Array(arr.clone())
+        }
+        "splice" => {
+            let len = arr.len() as i64;
+            let raw_start = if args.is_empty() { 0 } else { arg_int(args, 0) };
+            let start = if raw_start < 0 {
+                (len + raw_start).max(0) as usize
+            } else {
+                (raw_start as usize).min(arr.len())
+            };
+            let delete_count = if args.len() > 1 {
+                (arg_int(args, 1).max(0) as usize).min(arr.len() - start)
+            } else {
+                arr.len() - start
+            };
+            let inserts = args.iter().skip(2).cloned();
+            let deleted: Vec<Value> = arr.splice(start..start + delete_count, inserts).collect();
+            Value::Array(deleted)
+        }
+        _ => return None,
+    };
+    Some(result)
+}
+
 // ── Object static methods ────────────────────────────────────────────
 
 fn call_object_method(method: &str, args: &[Value]) -> Result<Option<Value>> {
