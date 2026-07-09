@@ -13,6 +13,11 @@ pub enum Value {
     String(Arc<str>),
     Array(Vec<Value>),
     Object(IndexMap<Arc<str>, Value>),
+    /// Internal, transient marker produced by the `Spread` instruction and
+    /// consumed by `CreateArray`/`CreateObject`. Never surfaces to user code.
+    /// Serializable because it can be live on the operand stack across a
+    /// suspension (e.g. `[...a, await f()]`).
+    Spread(Box<Value>),
     Function(Closure),
     /// A generator object — calling function* creates one of these.
     /// Generators are stateful and cannot be serialized mid-yield.
@@ -73,6 +78,7 @@ impl Value {
             Value::Object(_) => "object",
             Value::Function(_) | Value::BuiltinMethod { .. } => "function",
             Value::Generator(_) => "object",
+            Value::Spread(_) => "object",
         }
     }
 
@@ -87,7 +93,8 @@ impl Value {
             | Value::Object(_)
             | Value::Function(_)
             | Value::BuiltinMethod { .. }
-            | Value::Generator(_) => true,
+            | Value::Generator(_)
+            | Value::Spread(_) => true,
         }
     }
 
@@ -132,6 +139,7 @@ impl Value {
             Value::Object(_) => "[object Object]".to_string(),
             Value::Function(_) | Value::BuiltinMethod { .. } => "function".to_string(),
             Value::Generator(_) => "[object Generator]".to_string(),
+            Value::Spread(_) => "[object Spread]".to_string(),
         }
     }
 

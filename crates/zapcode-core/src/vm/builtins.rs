@@ -263,6 +263,8 @@ fn value_to_json(val: &Value) -> String {
         Value::Function(_) | Value::BuiltinMethod { .. } | Value::Generator(_) => {
             "undefined".to_string()
         }
+        // Transient internal marker; never reaches user-visible JSON.
+        Value::Spread(_) => "undefined".to_string(),
     }
 }
 

@@ -5,7 +5,7 @@
 
 use zapcode_core::vm::{eval_ts, eval_ts_with_output};
 use zapcode_core::Value;
-use zapcode_core::ZapcodeError;
+use zapcode_core::{ResourceLimits, ZapcodeError, ZapcodeRun};
 
 // ── 1. Prototype pollution ──────────────────────────────────────────
 
@@ -1014,4 +1014,61 @@ fn test_finalization_registry_escape() {
     );
     // not supported is good
     let _ = result;
+}
+
+// ── 12. Spread amplification ───────────────────────────────────────
+// Arrays and objects are value types, so `[...a, ...a]` doubles the payload
+// while costing O(1) stack pushes. Flattening must count each produced
+// element against the allocation limit, or a short loop bypasses it.
+
+#[test]
+fn test_array_spread_amplification_hits_allocation_limit() {
+    let limits = ResourceLimits {
+        max_allocations: 10_000,
+        ..Default::default()
+    };
+    let runner = ZapcodeRun::new(
+        r#"
+        let a: any = [1, 2, 3, 4];
+        for (let i = 0; i < 16; i++) {
+            a = [...a, ...a];
+        }
+        a.length
+        "#
+        .to_string(),
+        vec![],
+        vec![],
+        limits,
+    )
+    .unwrap();
+    let result = runner.start(vec![]);
+    assert!(
+        matches!(result, Err(ZapcodeError::AllocationLimitExceeded)),
+        "VULN: array spread flattening not counted against the allocation limit, got: {result:?}"
+    );
+}
+
+#[test]
+fn test_object_spread_amplification_hits_allocation_limit() {
+    let limits = ResourceLimits {
+        max_allocations: 10_000,
+        ..Default::default()
+    };
+    let runner = ZapcodeRun::new(
+        r#"
+        const s = "ab".repeat(20000);
+        const o = { ...s };
+        Object.keys(o).length
+        "#
+        .to_string(),
+        vec![],
+        vec![],
+        limits,
+    )
+    .unwrap();
+    let result = runner.start(vec![]);
+    assert!(
+        matches!(result, Err(ZapcodeError::AllocationLimitExceeded)),
+        "VULN: object spread merging not counted against the allocation limit, got: {result:?}"
+    );
 }

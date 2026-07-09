@@ -226,3 +226,57 @@ fn test_if_block_with_user_function_and_object_arg() {
     let result = eval_ts("function f(x){ return x; }\nif (true) { f({ a: 1 }); }").unwrap();
     assert_eq!(result, Value::Undefined);
 }
+
+// ── spread (regression: were silently-wrong / crashing) ──────────────────────
+
+#[test]
+fn test_array_spread_flattens() {
+    // (Value's PartialEq is JS ===, so arrays compare by reference — assert via join.)
+    let r = eval_ts("const a = [1, 2]; const b = [...a, 3]; b.join(',')").unwrap();
+    assert_eq!(r, Value::String("1,2,3".into()));
+}
+
+#[test]
+fn test_array_spread_middle_and_multiple() {
+    let r = eval_ts("const a = [1]; const b = [2, 3]; [0, ...a, ...b, 4].join(',')").unwrap();
+    assert_eq!(r, Value::String("0,1,2,3,4".into()));
+}
+
+#[test]
+fn test_object_spread() {
+    let r = eval_ts("const a = { x: 1 }; const b = { ...a, y: 2 }; b.x + b.y").unwrap();
+    assert_eq!(r, Value::Int(3));
+}
+
+#[test]
+fn test_object_spread_overrides_later_wins() {
+    let r = eval_ts("const o = { ...{ a: 1, b: 2 }, b: 3 }; o.b").unwrap();
+    assert_eq!(r, Value::Int(3));
+}
+
+#[test]
+fn test_array_spread_non_iterable_errors() {
+    let err = eval_ts("const x = 5; [...x]").unwrap_err();
+    assert!(err.to_string().contains("not iterable"), "got: {err}");
+}
+
+#[test]
+fn test_array_spread_empty_source() {
+    assert_eq!(eval_ts("[...[]].length").unwrap(), Value::Int(0));
+}
+
+#[test]
+fn test_object_spread_empty_source() {
+    assert_eq!(
+        eval_ts("Object.keys({ ...{} }).length").unwrap(),
+        Value::Int(0)
+    );
+}
+
+#[test]
+fn test_object_spread_string_uses_char_index_keys() {
+    assert_eq!(
+        eval_ts(r#"const o = { ..."ab" }; o["1"]"#).unwrap(),
+        Value::String("b".into())
+    );
+}

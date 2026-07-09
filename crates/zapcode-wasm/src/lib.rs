@@ -83,6 +83,7 @@ fn value_to_js(val: &Value) -> Result<JsValue, JsError> {
             }
             Ok(obj.into())
         }
+        Value::Spread(inner) => value_to_js(inner),
         Value::Function(_) | Value::BuiltinMethod { .. } => Ok(JsValue::from_str("<function>")),
         Value::Generator(_) => Ok(JsValue::from_str("<generator>")),
     }

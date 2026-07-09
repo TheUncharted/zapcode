@@ -71,6 +71,7 @@ fn value_to_py(py: Python<'_>, val: &Value) -> PyResult<PyObject> {
             }
             Ok(dict.into_pyobject(py)?.into_any().unbind())
         }
+        Value::Spread(inner) => value_to_py(py, inner),
         Value::Function(_) | Value::BuiltinMethod { .. } => {
             // Functions cannot be meaningfully represented in Python.
             Ok("<function>".into_pyobject(py)?.into_any().unbind())

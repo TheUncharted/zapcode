@@ -272,6 +272,7 @@ fn value_to_json(value: &Value) -> serde_json::Value {
                 .collect();
             serde_json::Value::Object(map)
         }
+        Value::Spread(inner) => value_to_json(inner),
         Value::Function(_) | Value::BuiltinMethod { .. } => {
             // Functions are not serializable to JSON.
             serde_json::Value::Null
