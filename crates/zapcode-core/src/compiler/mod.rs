@@ -37,6 +37,9 @@ struct Compiler {
 struct LoopInfo {
     break_patches: Vec<usize>,
     continue_patches: Vec<usize>,
+    // A `switch` participates in `break` targeting (break exits the switch) but
+    // NOT `continue` — a `continue` inside a switch targets the enclosing loop.
+    is_switch: bool,
 }
 
 impl Compiler {
@@ -222,6 +225,7 @@ impl Compiler {
                 self.loop_stack.push(LoopInfo {
                     break_patches: Vec::new(),
                     continue_patches: Vec::new(),
+                    is_switch: false,
                 });
 
                 self.compile_expr(test)?;
@@ -248,6 +252,7 @@ impl Compiler {
                 self.loop_stack.push(LoopInfo {
                     break_patches: Vec::new(),
                     continue_patches: Vec::new(),
+                    is_switch: false,
                 });
 
                 for s in body {
@@ -282,6 +287,7 @@ impl Compiler {
                 self.loop_stack.push(LoopInfo {
                     break_patches: Vec::new(),
                     continue_patches: Vec::new(),
+                    is_switch: false,
                 });
 
                 let exit_jump = if let Some(test) = test {
@@ -329,6 +335,7 @@ impl Compiler {
                 self.loop_stack.push(LoopInfo {
                     break_patches: Vec::new(),
                     continue_patches: Vec::new(),
+                    is_switch: false,
                 });
 
                 self.emit(Instruction::Dup);
@@ -413,15 +420,28 @@ impl Compiler {
                 }
             }
             Statement::Break { .. } => {
+                // `break` exits the nearest loop OR switch.
                 let idx = self.emit(Instruction::Jump(0));
-                if let Some(loop_info) = self.loop_stack.last_mut() {
-                    loop_info.break_patches.push(idx);
+                match self.loop_stack.last_mut() {
+                    Some(loop_info) => loop_info.break_patches.push(idx),
+                    None => {
+                        return Err(ZapcodeError::CompileError(
+                            "illegal break statement (not inside a loop or switch)".to_string(),
+                        ))
+                    }
                 }
             }
             Statement::Continue { .. } => {
+                // `continue` targets the nearest enclosing *loop*, skipping any
+                // switch frames in between (a switch is break-only).
                 let idx = self.emit(Instruction::Jump(0));
-                if let Some(loop_info) = self.loop_stack.last_mut() {
-                    loop_info.continue_patches.push(idx);
+                match self.loop_stack.iter_mut().rev().find(|l| !l.is_switch) {
+                    Some(loop_info) => loop_info.continue_patches.push(idx),
+                    None => {
+                        return Err(ZapcodeError::CompileError(
+                            "illegal continue statement (not inside a loop)".to_string(),
+                        ))
+                    }
                 }
             }
             Statement::FunctionDecl { func_index, .. } => {
@@ -487,6 +507,14 @@ impl Compiler {
 
                 let jump_end = self.emit(Instruction::Jump(0));
 
+                // A `break` inside a case must exit the switch. Register a
+                // switch frame so `break` jumps here (and `continue` skips it).
+                self.loop_stack.push(LoopInfo {
+                    break_patches: Vec::new(),
+                    continue_patches: Vec::new(),
+                    is_switch: true,
+                });
+
                 // Compile case bodies
                 let mut body_starts = Vec::new();
                 for case in cases {
@@ -498,6 +526,12 @@ impl Compiler {
 
                 let end = self.current_offset();
                 self.emit(Instruction::Pop); // pop discriminant
+
+                // `break` targets the Pop, so it also cleans up the discriminant.
+                let switch_frame = self.loop_stack.pop().expect("switch frame present");
+                for patch in switch_frame.break_patches {
+                    self.patch_jump(patch, end);
+                }
 
                 // Patch jumps
                 for (i, &jump) in case_jumps.iter().enumerate() {
