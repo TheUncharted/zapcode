@@ -707,6 +707,136 @@ fn call_array_method(arr: &[Value], method: &str, args: &[Value]) -> Result<Opti
     Ok(Some(result))
 }
 
+/// Dispatch a global builtin function call (parseInt, isNaN, Number, …).
+/// Returns `None` only for an unrecognized name (the compiler shouldn't emit one).
+pub fn call_global_function(name: &str, args: &[Value]) -> Option<Value> {
+    let value = match name {
+        "parseInt" => parse_int(args),
+        "parseFloat" => parse_float(args),
+        "isNaN" => Value::Bool(arg_num(args, 0).is_nan()),
+        "isFinite" => Value::Bool(arg_num(args, 0).is_finite()),
+        "String" => match args.first() {
+            Some(v) => Value::String(Arc::from(v.to_js_string().as_str())),
+            None => Value::String(Arc::from("")),
+        },
+        "Number" => match args.first() {
+            Some(v) => narrow_number(v.to_number()),
+            None => Value::Int(0),
+        },
+        "Boolean" => Value::Bool(args.first().map(|v| v.is_truthy()).unwrap_or(false)),
+        _ => return None,
+    };
+    Some(value)
+}
+
+/// Represent a finite integral number as `Int` (nicer `===`), else `Float`.
+fn narrow_number(n: f64) -> Value {
+    if n.is_finite() && n.fract() == 0.0 && n.abs() < i64::MAX as f64 {
+        Value::Int(n as i64)
+    } else {
+        Value::Float(n)
+    }
+}
+
+fn parse_int(args: &[Value]) -> Value {
+    let s = args.first().map(|v| v.to_js_string()).unwrap_or_default();
+    let chars: Vec<char> = s.trim_start().chars().collect();
+    let mut i = 0;
+    let mut sign = 1.0;
+    if i < chars.len() && (chars[i] == '+' || chars[i] == '-') {
+        if chars[i] == '-' {
+            sign = -1.0;
+        }
+        i += 1;
+    }
+
+    let radix_arg = args.get(1).map(|v| v.to_number()).unwrap_or(f64::NAN);
+    let mut radix: i64 = if radix_arg.is_nan() || radix_arg == 0.0 {
+        0
+    } else {
+        radix_arg as i64
+    };
+    if radix != 0 && !(2..=36).contains(&radix) {
+        return Value::Float(f64::NAN);
+    }
+    if (radix == 0 || radix == 16)
+        && i + 1 < chars.len()
+        && chars[i] == '0'
+        && (chars[i + 1] == 'x' || chars[i + 1] == 'X')
+    {
+        i += 2;
+        radix = 16;
+    }
+    if radix == 0 {
+        radix = 10;
+    }
+
+    let mut value = 0.0;
+    let mut any = false;
+    while i < chars.len() {
+        match chars[i].to_digit(36) {
+            Some(d) if (d as i64) < radix => {
+                value = value * radix as f64 + d as f64;
+                any = true;
+                i += 1;
+            }
+            _ => break,
+        }
+    }
+    if !any {
+        return Value::Float(f64::NAN);
+    }
+    narrow_number(sign * value)
+}
+
+fn parse_float(args: &[Value]) -> Value {
+    let s = args.first().map(|v| v.to_js_string()).unwrap_or_default();
+    let s = s.trim_start();
+    if s.starts_with("Infinity") || s.starts_with("+Infinity") {
+        return Value::Float(f64::INFINITY);
+    }
+    if s.starts_with("-Infinity") {
+        return Value::Float(f64::NEG_INFINITY);
+    }
+    let b = s.as_bytes();
+    let n = b.len();
+    let mut i = 0;
+    if i < n && (b[i] == b'+' || b[i] == b'-') {
+        i += 1;
+    }
+    let mut saw_digit = false;
+    while i < n && b[i].is_ascii_digit() {
+        i += 1;
+        saw_digit = true;
+    }
+    if i < n && b[i] == b'.' {
+        i += 1;
+        while i < n && b[i].is_ascii_digit() {
+            i += 1;
+            saw_digit = true;
+        }
+    }
+    if saw_digit && i < n && (b[i] == b'e' || b[i] == b'E') {
+        let mut j = i + 1;
+        if j < n && (b[j] == b'+' || b[j] == b'-') {
+            j += 1;
+        }
+        if j < n && b[j].is_ascii_digit() {
+            while j < n && b[j].is_ascii_digit() {
+                j += 1;
+            }
+            i = j;
+        }
+    }
+    if !saw_digit {
+        return Value::Float(f64::NAN);
+    }
+    s[..i]
+        .parse::<f64>()
+        .map(Value::Float)
+        .unwrap_or(Value::Float(f64::NAN))
+}
+
 // ── Object static methods ────────────────────────────────────────────
 
 fn call_object_method(method: &str, args: &[Value]) -> Result<Option<Value>> {

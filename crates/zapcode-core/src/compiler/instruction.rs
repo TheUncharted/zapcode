@@ -60,6 +60,8 @@ pub enum Instruction {
     Call(usize),
     Return,
     CallExternal(String, usize),
+    /// Call a global builtin function by name (e.g. parseInt, isNaN, Number).
+    CallBuiltin(String, usize),
 
     // Control flow
     Jump(usize),

@@ -574,3 +574,43 @@ fn test_array_some_empty() {
     let result = eval_ts("[].some((x) => x > 0)").unwrap();
     assert_eq!(result, Value::Bool(false));
 }
+
+// ── global builtin functions (regression: parseInt/parseFloat were missing) ──
+
+#[test]
+fn test_parse_int() {
+    assert_eq!(eval_ts("parseInt('42px')").unwrap(), Value::Int(42));
+    assert_eq!(eval_ts("parseInt('  -7')").unwrap(), Value::Int(-7));
+    assert_eq!(eval_ts("parseInt('0xFF')").unwrap(), Value::Int(255));
+    assert_eq!(eval_ts("parseInt('101', 2)").unwrap(), Value::Int(5));
+    assert_eq!(eval_ts("parseInt('ff', 16)").unwrap(), Value::Int(255));
+    assert!(matches!(eval_ts("parseInt('abc')").unwrap(), Value::Float(f) if f.is_nan()));
+}
+
+#[test]
+fn test_parse_float() {
+    assert_eq!(eval_ts("parseFloat('2.5xyz')").unwrap(), Value::Float(2.5));
+    assert_eq!(
+        eval_ts("parseFloat('  1e3')").unwrap(),
+        Value::Float(1000.0)
+    );
+    assert!(matches!(eval_ts("parseFloat('nope')").unwrap(), Value::Float(f) if f.is_nan()));
+}
+
+#[test]
+fn test_isnan_isfinite_number_string_boolean() {
+    assert_eq!(eval_ts("isNaN(NaN)").unwrap(), Value::Bool(true));
+    assert_eq!(eval_ts("isNaN(3)").unwrap(), Value::Bool(false));
+    assert_eq!(eval_ts("isFinite(1/0)").unwrap(), Value::Bool(false));
+    assert_eq!(eval_ts("isFinite(42)").unwrap(), Value::Bool(true));
+    assert_eq!(eval_ts("Number('42')").unwrap(), Value::Int(42));
+    assert_eq!(eval_ts("String(42)").unwrap(), Value::String("42".into()));
+    assert_eq!(eval_ts("Boolean(0)").unwrap(), Value::Bool(false));
+}
+
+#[test]
+fn test_global_builtin_shadowed_by_local() {
+    // A local named `Number` must win over the builtin.
+    let r = eval_ts("const Number = (x) => x + 1; Number(41)").unwrap();
+    assert_eq!(r, Value::Int(42));
+}

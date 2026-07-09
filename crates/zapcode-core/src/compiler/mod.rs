@@ -34,6 +34,15 @@ struct Compiler {
     external_functions: HashSet<String>,
 }
 
+/// Global functions dispatched via `Instruction::CallBuiltin`. Kept in sync with
+/// `builtins::call_global_function`.
+fn is_global_builtin_fn(name: &str) -> bool {
+    matches!(
+        name,
+        "parseInt" | "parseFloat" | "isNaN" | "isFinite" | "String" | "Number" | "Boolean"
+    )
+}
+
 struct LoopInfo {
     break_patches: Vec<usize>,
     continue_patches: Vec<usize>,
@@ -916,6 +925,17 @@ impl Compiler {
                             self.compile_expr(arg)?;
                         }
                         self.emit(Instruction::CallExternal(name.clone(), args.len()));
+                        return Ok(());
+                    }
+                }
+                // Direct call to a global builtin function (parseInt, Number, …),
+                // unless shadowed by a local of the same name.
+                if let Expr::Ident(name) = callee.as_ref() {
+                    if self.resolve_local(name).is_none() && is_global_builtin_fn(name) {
+                        for arg in args {
+                            self.compile_expr(arg)?;
+                        }
+                        self.emit(Instruction::CallBuiltin(name.clone(), args.len()));
                         return Ok(());
                     }
                 }

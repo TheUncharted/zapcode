@@ -1808,6 +1808,22 @@ impl Vm {
                     snapshot,
                 }));
             }
+            Instruction::CallBuiltin(name, arg_count) => {
+                let mut args = Vec::with_capacity(arg_count);
+                for _ in 0..arg_count {
+                    args.push(self.pop()?);
+                }
+                args.reverse();
+                match builtins::call_global_function(&name, &args) {
+                    Some(val) => self.push(val)?,
+                    None => {
+                        return Err(ZapcodeError::TypeError(format!(
+                            "{} is not a function",
+                            name
+                        )))
+                    }
+                }
+            }
 
             // Control flow
             Instruction::Jump(target) => {
