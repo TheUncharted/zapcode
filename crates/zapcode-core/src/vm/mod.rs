@@ -239,7 +239,7 @@ impl Vm {
                     locals.push(args.get(i).cloned().unwrap_or(Value::Undefined));
                 }
                 ParamPattern::Rest(_) => {
-                    let rest: Vec<Value> = args[i..].to_vec();
+                    let rest: Vec<Value> = args.get(i..).map(|s| s.to_vec()).unwrap_or_default();
                     locals.push(Value::Array(rest));
                 }
                 ParamPattern::DefaultValue { .. } => {
@@ -247,8 +247,35 @@ impl Vm {
                     // Keep Undefined so the compiler-emitted default init can fire
                     locals.push(val);
                 }
-                _ => {
-                    locals.push(args.get(i).cloned().unwrap_or(Value::Undefined));
+                // Destructuring params bind one local per name — matching the
+                // per-name locals declared in `compile_function_def`. Push a
+                // value for each *named* slot, in declaration order.
+                ParamPattern::ObjectDestructure(fields) => {
+                    let arg = args.get(i).cloned().unwrap_or(Value::Undefined);
+                    for field in fields {
+                        let val = match &arg {
+                            Value::Object(map) => map
+                                .get(field.key.as_str())
+                                .cloned()
+                                .unwrap_or(Value::Undefined),
+                            _ => Value::Undefined,
+                        };
+                        locals.push(val);
+                    }
+                }
+                ParamPattern::ArrayDestructure(elems) => {
+                    let arg = args.get(i).cloned().unwrap_or(Value::Undefined);
+                    for (j, elem) in elems.iter().enumerate() {
+                        // Only `Some(Ident)` slots declare a local (holes and
+                        // unsupported nested patterns declare nothing) — stay aligned.
+                        if let Some(ParamPattern::Ident(_)) = elem {
+                            let val = match &arg {
+                                Value::Array(a) => a.get(j).cloned().unwrap_or(Value::Undefined),
+                                _ => Value::Undefined,
+                            };
+                            locals.push(val);
+                        }
+                    }
                 }
             }
         }

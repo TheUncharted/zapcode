@@ -58,3 +58,24 @@ fn test_rest_params() {
     // Rest params create an array — need array indexing to work
     assert_eq!(result, Value::Int(15));
 }
+
+// ── destructuring parameters (regression: bound whole arg, not elements) ─────
+
+#[test]
+fn test_array_destructure_param() {
+    let r = eval_ts("const f = ([a, b]) => a + b; f([10, 20])").unwrap();
+    assert_eq!(r, Value::Int(30));
+}
+
+#[test]
+fn test_object_destructure_param() {
+    let r = eval_ts("const f = ({ x, y }) => x * y; f({ x: 6, y: 7 })").unwrap();
+    assert_eq!(r, Value::Int(42));
+}
+
+#[test]
+fn test_entries_map_destructure() {
+    let r =
+        eval_ts("Object.entries({ a: 1, b: 2 }).map(([k, v]) => `${k}${v}`).join(',')").unwrap();
+    assert_eq!(r, Value::String("a1,b2".into()));
+}
