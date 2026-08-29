@@ -31,12 +31,14 @@ struct Compiler {
     local_indices: HashMap<String, usize>,
     functions: Vec<CompiledFunction>,
     loop_stack: Vec<LoopInfo>,
+    try_depth: usize,
     external_functions: HashSet<String>,
 }
 
 struct LoopInfo {
     break_patches: Vec<usize>,
     continue_patches: Vec<usize>,
+    try_depth: usize,
 }
 
 impl Compiler {
@@ -47,6 +49,7 @@ impl Compiler {
             local_indices: HashMap::new(),
             functions: Vec::new(),
             loop_stack: Vec::new(),
+            try_depth: 0,
             external_functions,
         }
     }
@@ -222,6 +225,7 @@ impl Compiler {
                 self.loop_stack.push(LoopInfo {
                     break_patches: Vec::new(),
                     continue_patches: Vec::new(),
+                    try_depth: self.try_depth,
                 });
 
                 self.compile_expr(test)?;
@@ -248,6 +252,7 @@ impl Compiler {
                 self.loop_stack.push(LoopInfo {
                     break_patches: Vec::new(),
                     continue_patches: Vec::new(),
+                    try_depth: self.try_depth,
                 });
 
                 for s in body {
@@ -282,6 +287,7 @@ impl Compiler {
                 self.loop_stack.push(LoopInfo {
                     break_patches: Vec::new(),
                     continue_patches: Vec::new(),
+                    try_depth: self.try_depth,
                 });
 
                 let exit_jump = if let Some(test) = test {
@@ -329,6 +335,7 @@ impl Compiler {
                 self.loop_stack.push(LoopInfo {
                     break_patches: Vec::new(),
                     continue_patches: Vec::new(),
+                    try_depth: self.try_depth,
                 });
 
                 self.emit(Instruction::Dup);
@@ -382,9 +389,11 @@ impl Compiler {
             } => {
                 let setup = self.emit(Instruction::SetupTry(0, None));
 
+                self.try_depth += 1;
                 for s in try_body {
                     self.compile_statement(s)?;
                 }
+                self.try_depth -= 1;
                 self.emit(Instruction::EndTry);
                 let jump_past_catch = self.emit(Instruction::Jump(0));
 
@@ -413,16 +422,34 @@ impl Compiler {
                 }
             }
             Statement::Break { .. } => {
-                let idx = self.emit(Instruction::Jump(0));
-                if let Some(loop_info) = self.loop_stack.last_mut() {
-                    loop_info.break_patches.push(idx);
+                let Some(target_try_depth) = self.loop_stack.last().map(|info| info.try_depth)
+                else {
+                    return Err(ZapcodeError::CompileError(
+                        "illegal break statement (not inside a loop)".to_string(),
+                    ));
+                };
+                for _ in target_try_depth..self.try_depth {
+                    self.emit(Instruction::EndTry);
                 }
+                let idx = self.emit(Instruction::Jump(0));
+                self.loop_stack.last_mut().unwrap().break_patches.push(idx);
             }
             Statement::Continue { .. } => {
-                let idx = self.emit(Instruction::Jump(0));
-                if let Some(loop_info) = self.loop_stack.last_mut() {
-                    loop_info.continue_patches.push(idx);
+                let Some(target_try_depth) = self.loop_stack.last().map(|info| info.try_depth)
+                else {
+                    return Err(ZapcodeError::CompileError(
+                        "illegal continue statement (not inside a loop)".to_string(),
+                    ));
+                };
+                for _ in target_try_depth..self.try_depth {
+                    self.emit(Instruction::EndTry);
                 }
+                let idx = self.emit(Instruction::Jump(0));
+                self.loop_stack
+                    .last_mut()
+                    .unwrap()
+                    .continue_patches
+                    .push(idx);
             }
             Statement::FunctionDecl { func_index, .. } => {
                 self.emit(Instruction::CreateClosure(*func_index));

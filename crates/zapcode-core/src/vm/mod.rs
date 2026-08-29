@@ -99,6 +99,7 @@ pub struct Vm {
     last_load_source: Option<ReceiverSource>,
     /// Counter for assigning unique generator IDs.
     next_generator_id: u64,
+    generator_try_handlers: HashMap<u64, Vec<SuspendedTryHandler>>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -106,6 +107,11 @@ pub(crate) struct TryInfo {
     pub(crate) catch_ip: usize,
     pub(crate) frame_depth: usize,
     pub(crate) stack_depth: usize,
+}
+
+struct SuspendedTryHandler {
+    catch_ip: usize,
+    stack_offset: usize,
 }
 
 impl Vm {
@@ -135,6 +141,7 @@ impl Vm {
             last_global_name: None,
             last_load_source: None,
             next_generator_id: 0,
+            generator_try_handlers: HashMap::new(),
         }
     }
 
@@ -181,6 +188,7 @@ impl Vm {
             last_global_name: None,
             last_load_source: None,
             next_generator_id: 0,
+            generator_try_handlers: HashMap::new(),
         }
     }
 
@@ -201,6 +209,60 @@ impl Vm {
         self.stack
             .pop()
             .ok_or_else(|| ZapcodeError::RuntimeError("stack underflow".to_string()))
+    }
+
+    fn pop_call_frame(&mut self) -> Option<CallFrame> {
+        let frame = self.frames.pop()?;
+        self.tracker.pop_frame();
+        let remaining_depth = self.frames.len();
+        self.try_stack
+            .retain(|try_info| try_info.frame_depth <= remaining_depth);
+        Some(frame)
+    }
+
+    fn take_try_handler(&mut self, min_frame_depth: usize) -> Option<TryInfo> {
+        while let Some(try_info) = self.try_stack.last() {
+            if try_info.frame_depth > self.frames.len() {
+                self.try_stack.pop();
+                continue;
+            }
+            if try_info.frame_depth <= min_frame_depth {
+                return None;
+            }
+            return self.try_stack.pop();
+        }
+        None
+    }
+
+    fn try_handle_error(&mut self, err: &ZapcodeError, min_frame_depth: usize) -> Result<bool> {
+        let Some(try_info) = self.take_try_handler(min_frame_depth) else {
+            return Ok(false);
+        };
+
+        self.continuations.retain(|continuation| {
+            let callback_frame_index = match continuation {
+                Continuation::ArrayMap {
+                    callback_frame_index,
+                    ..
+                }
+                | Continuation::ArrayForEach {
+                    callback_frame_index,
+                    ..
+                } => *callback_frame_index,
+            };
+            callback_frame_index < try_info.frame_depth
+        });
+        while self.frames.len() > try_info.frame_depth {
+            self.pop_call_frame();
+        }
+        self.stack.truncate(try_info.stack_depth);
+        self.push(Value::String(Arc::from(err.to_string())))?;
+        let frame = self
+            .frames
+            .last_mut()
+            .ok_or_else(|| ZapcodeError::RuntimeError("no active call frame".to_string()))?;
+        frame.ip = try_info.catch_ip;
+        Ok(true)
     }
 
     fn peek(&self) -> Result<&Value> {
@@ -364,8 +426,7 @@ impl Vm {
                     return Ok(VmState::Complete(result));
                 } else {
                     // Return from function
-                    let frame = self.frames.pop().unwrap();
-                    self.tracker.pop_frame();
+                    let frame = self.pop_call_frame().unwrap();
                     // If this was a constructor, return `this`
                     if let Some(this_val) = frame.this_value {
                         self.stack.truncate(frame.stack_base);
@@ -392,22 +453,7 @@ impl Vm {
                     }
                 }
                 Err(err) => {
-                    // Try to catch the error
-                    if let Some(try_info) = self.try_stack.pop() {
-                        // Unwind to catch block
-                        while self.frames.len() > try_info.frame_depth {
-                            self.frames.pop();
-                            self.tracker.pop_frame();
-                        }
-                        self.stack.truncate(try_info.stack_depth);
-
-                        // Push error value
-                        let error_val = Value::String(Arc::from(err.to_string()));
-                        self.push(error_val)?;
-
-                        // Jump to catch
-                        self.current_frame_mut().ip = try_info.catch_ip;
-                    } else {
+                    if !self.try_handle_error(&err, 0)? {
                         return Err(err);
                     }
                 }
@@ -590,14 +636,12 @@ impl Vm {
                 // End of function without explicit return
                 if self.frames.len() > target_frame_depth + 1 {
                     // Inner function ended, pop and continue
-                    self.frames.pop();
-                    self.tracker.pop_frame();
+                    self.pop_call_frame();
                     self.push(Value::Undefined)?;
                     continue;
                 } else {
                     // Our target function ended
-                    self.frames.pop();
-                    self.tracker.pop_frame();
+                    self.pop_call_frame();
                     return Ok(Value::Undefined);
                 }
             }
@@ -624,17 +668,7 @@ impl Vm {
                     }
                 }
                 Err(err) => {
-                    // Try to catch the error within the callback
-                    if let Some(try_info) = self.try_stack.pop() {
-                        while self.frames.len() > try_info.frame_depth {
-                            self.frames.pop();
-                            self.tracker.pop_frame();
-                        }
-                        self.stack.truncate(try_info.stack_depth);
-                        let error_val = Value::String(Arc::from(err.to_string()));
-                        self.push(error_val)?;
-                        self.current_frame_mut().ip = try_info.catch_ip;
-                    } else {
+                    if !self.try_handle_error(&err, target_frame_depth)? {
                         return Err(err);
                     }
                 }
@@ -1033,6 +1067,15 @@ impl Vm {
                     this_value: None,
                     receiver_source: None,
                 });
+                let frame_depth = self.frames.len();
+                if let Some(handlers) = self.generator_try_handlers.remove(&gen_obj.id) {
+                    self.try_stack
+                        .extend(handlers.into_iter().map(|handler| TryInfo {
+                            catch_ip: handler.catch_ip,
+                            frame_depth,
+                            stack_depth: stack_base + handler.stack_offset,
+                        }));
+                }
                 self.run_generator_until_yield_or_return(gen_obj)
             }
         }
@@ -1044,6 +1087,7 @@ impl Vm {
         let gen_key = format!("__gen_{}", gen_obj.id);
         if gen_obj.done {
             self.globals.remove(&gen_key);
+            self.generator_try_handlers.remove(&gen_obj.id);
         } else {
             self.globals.insert(gen_key, Value::Generator(gen_obj));
         }
@@ -1074,8 +1118,7 @@ impl Vm {
             };
             if frame.ip >= instructions.len() {
                 if self.frames.len() > target_frame_depth + 1 {
-                    let frame = self.frames.pop().unwrap();
-                    self.tracker.pop_frame();
+                    let frame = self.pop_call_frame().unwrap();
                     if let Some(this_val) = frame.this_value {
                         self.stack.truncate(frame.stack_base);
                         self.push(this_val)?;
@@ -1084,8 +1127,7 @@ impl Vm {
                     }
                     continue;
                 }
-                let frame = self.frames.pop().unwrap();
-                self.tracker.pop_frame();
+                let frame = self.pop_call_frame().unwrap();
                 self.stack.truncate(frame.stack_base);
                 let result = self.finish_generator(gen_obj, Value::Undefined);
                 return Ok(result);
@@ -1094,9 +1136,24 @@ impl Vm {
             if matches!(instr, Instruction::Yield) {
                 self.current_frame_mut().ip += 1;
                 let yielded_value = self.pop()?;
-                let frame = self.frames.pop().unwrap();
-                self.tracker.pop_frame();
+                let frame_depth = self.frames.len();
+                let frame_stack_base = self.current_frame().stack_base;
+                let try_handlers: Vec<SuspendedTryHandler> = self
+                    .try_stack
+                    .iter()
+                    .filter(|try_info| try_info.frame_depth == frame_depth)
+                    .map(|try_info| SuspendedTryHandler {
+                        catch_ip: try_info.catch_ip,
+                        stack_offset: try_info.stack_depth.saturating_sub(frame_stack_base),
+                    })
+                    .collect();
+                let frame = self.pop_call_frame().unwrap();
                 let frame_stack: Vec<Value> = self.stack.drain(frame.stack_base..).collect();
+                if try_handlers.is_empty() {
+                    self.generator_try_handlers.remove(&gen_obj.id);
+                } else {
+                    self.generator_try_handlers.insert(gen_obj.id, try_handlers);
+                }
                 gen_obj.suspended = Some(SuspendedFrame {
                     ip: frame.ip,
                     locals: frame.locals,
@@ -1110,14 +1167,12 @@ impl Vm {
                 self.current_frame_mut().ip += 1;
                 let return_val = self.pop().unwrap_or(Value::Undefined);
                 if self.frames.len() > target_frame_depth + 1 {
-                    let frame = self.frames.pop().unwrap();
-                    self.tracker.pop_frame();
+                    let frame = self.pop_call_frame().unwrap();
                     self.stack.truncate(frame.stack_base);
                     self.push(return_val)?;
                     continue;
                 }
-                let frame = self.frames.pop().unwrap();
-                self.tracker.pop_frame();
+                let frame = self.pop_call_frame().unwrap();
                 self.stack.truncate(frame.stack_base);
                 let result = self.finish_generator(gen_obj, return_val);
                 return Ok(result);
@@ -1138,16 +1193,7 @@ impl Vm {
                     }
                 }
                 Err(err) => {
-                    if let Some(try_info) = self.try_stack.pop() {
-                        while self.frames.len() > try_info.frame_depth {
-                            self.frames.pop();
-                            self.tracker.pop_frame();
-                        }
-                        self.stack.truncate(try_info.stack_depth);
-                        let error_val = Value::String(Arc::from(err.to_string()));
-                        self.push(error_val)?;
-                        self.current_frame_mut().ip = try_info.catch_ip;
-                    } else {
+                    if !self.try_handle_error(&err, target_frame_depth)? {
                         return Err(err);
                     }
                 }
@@ -1783,8 +1829,7 @@ impl Vm {
                     return Ok(Some(VmState::Complete(return_val)));
                 }
 
-                let frame = self.frames.pop().unwrap();
-                self.tracker.pop_frame();
+                let frame = self.pop_call_frame().unwrap();
 
                 // If this was a constructor frame (has this_value), return the
                 // updated `this` instead of the explicit return value (unless
