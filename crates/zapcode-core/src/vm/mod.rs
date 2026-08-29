@@ -1025,6 +1025,7 @@ impl Vm {
             None => {
                 let func = &self.program.functions[func_idx];
                 self.tracker.push_frame();
+                self.tracker.check_stack(&self.limits)?;
                 let mut locals = Vec::with_capacity(func.local_count);
                 for param in func.params.iter() {
                     match param {
@@ -1070,6 +1071,7 @@ impl Vm {
                 self.tracker
                     .track_allocations(&self.limits, handler_count)?;
                 self.tracker.push_frame();
+                self.tracker.check_stack(&self.limits)?;
                 let stack_base = self.stack.len();
                 for val in &suspended.stack {
                     self.push(val.clone())?;
