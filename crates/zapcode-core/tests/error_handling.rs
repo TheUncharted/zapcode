@@ -54,3 +54,35 @@ fn test_try_no_error() {
     .unwrap();
     assert_eq!(result, Value::Int(42));
 }
+
+// Regression: a throw escaping a nested array callback (or a callback inside a
+// class method) emptied the VM frame stack; execute() then hit
+// frames.last().unwrap() and aborted the host process. These must surface an
+// error to the caller, never panic. (The guest-level catch not observing the
+// throw is a separate, pre-existing unwinding issue.)
+#[test]
+fn test_throw_from_nested_callback_does_not_panic() {
+    let result = eval_ts(
+        r#"
+        let out = 0;
+        try {
+            [1].map(a => [2].map(b => { throw "n"; }));
+        } catch (e) { out = 3; }
+        out
+        "#,
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_throw_from_class_method_callback_does_not_panic() {
+    let result = eval_ts(
+        r#"
+        class A { run() { return [1].map(x => { throw "m"; }); } }
+        let out = 0;
+        try { new A().run(); } catch (e) { out = 6; }
+        out
+        "#,
+    );
+    assert!(result.is_err());
+}
