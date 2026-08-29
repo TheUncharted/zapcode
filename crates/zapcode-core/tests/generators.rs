@@ -1,8 +1,57 @@
-use zapcode_core::Value;
+use zapcode_core::{ResourceLimits, Value, ZapcodeError, ZapcodeRun};
 
 /// Helper to run TS code and get stdout + value
 fn eval_with_output(code: &str) -> (Value, String) {
     zapcode_core::vm::eval_ts_with_output(code).unwrap()
+}
+
+#[test]
+fn test_generator_next_respects_stack_limit() {
+    let runner = ZapcodeRun::new(
+        r#"
+        function* values() { yield 1; }
+        values().next()
+        "#
+        .to_string(),
+        Vec::new(),
+        Vec::new(),
+        ResourceLimits {
+            max_stack_depth: 0,
+            ..ResourceLimits::default()
+        },
+    )
+    .unwrap();
+
+    assert!(matches!(
+        runner.start(Vec::new()),
+        Err(ZapcodeError::StackOverflow(_))
+    ));
+}
+
+#[test]
+fn test_resumed_generator_respects_stack_limit() {
+    let runner = ZapcodeRun::new(
+        r#"
+        function* values() { yield 1; yield 2; }
+        const iterator = values();
+        iterator.next();
+        function resume() { return iterator.next(); }
+        resume()
+        "#
+        .to_string(),
+        Vec::new(),
+        Vec::new(),
+        ResourceLimits {
+            max_stack_depth: 1,
+            ..ResourceLimits::default()
+        },
+    )
+    .unwrap();
+
+    assert!(matches!(
+        runner.start(Vec::new()),
+        Err(ZapcodeError::StackOverflow(_))
+    ));
 }
 
 #[test]

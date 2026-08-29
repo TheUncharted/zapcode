@@ -235,6 +235,16 @@ impl Vm {
     }
 
     fn try_handle_error(&mut self, err: &ZapcodeError, min_frame_depth: usize) -> Result<bool> {
+        if matches!(
+            err,
+            ZapcodeError::MemoryLimitExceeded(_)
+                | ZapcodeError::TimeLimitExceeded
+                | ZapcodeError::StackOverflow(_)
+                | ZapcodeError::AllocationLimitExceeded
+        ) {
+            return Ok(false);
+        }
+
         let Some(try_info) = self.take_try_handler(min_frame_depth) else {
             return Ok(false);
         };
@@ -1015,6 +1025,7 @@ impl Vm {
             None => {
                 let func = &self.program.functions[func_idx];
                 self.tracker.push_frame();
+                self.tracker.check_stack(&self.limits)?;
                 let mut locals = Vec::with_capacity(func.local_count);
                 for param in func.params.iter() {
                     match param {
@@ -1053,7 +1064,14 @@ impl Vm {
                 self.run_generator_until_yield_or_return(gen_obj)
             }
             Some(suspended) => {
+                let handler_count = self
+                    .generator_try_handlers
+                    .get(&gen_obj.id)
+                    .map_or(0, Vec::len);
+                self.tracker
+                    .track_allocations(&self.limits, handler_count)?;
                 self.tracker.push_frame();
+                self.tracker.check_stack(&self.limits)?;
                 let stack_base = self.stack.len();
                 for val in &suspended.stack {
                     self.push(val.clone())?;
@@ -1134,6 +1152,21 @@ impl Vm {
             }
             let instr = instructions[frame.ip].clone();
             if matches!(instr, Instruction::Yield) {
+                let frame_depth = self.frames.len();
+                let frame_stack_base = self.current_frame().stack_base;
+                let handler_count = self
+                    .try_stack
+                    .iter()
+                    .filter(|try_info| try_info.frame_depth == frame_depth)
+                    .count();
+                let frame_stack_len = self.stack.len().saturating_sub(frame_stack_base + 1);
+                let map_entry_count = usize::from(handler_count > 0);
+                self.tracker.track_allocations(
+                    &self.limits,
+                    handler_count
+                        .saturating_add(frame_stack_len)
+                        .saturating_add(map_entry_count),
+                )?;
                 self.current_frame_mut().ip += 1;
                 let yielded_value = self.pop()?;
                 let frame_depth = self.frames.len();
@@ -2087,6 +2120,7 @@ impl Vm {
 
             // Error handling
             Instruction::SetupTry(catch_ip, _) => {
+                self.tracker.track_allocation(&self.limits)?;
                 self.try_stack.push(TryInfo {
                     catch_ip,
                     frame_depth: self.frames.len(),

@@ -1,5 +1,94 @@
-use zapcode_core::vm::eval_ts;
-use zapcode_core::Value;
+use zapcode_core::vm::{eval_ts, VmState};
+use zapcode_core::{ResourceLimits, Value, ZapcodeError, ZapcodeRun};
+
+#[test]
+fn test_try_handler_respects_allocation_limit() {
+    let runner = ZapcodeRun::new(
+        "try {} catch (e) {}".to_string(),
+        Vec::new(),
+        Vec::new(),
+        ResourceLimits {
+            max_allocations: 0,
+            ..ResourceLimits::default()
+        },
+    )
+    .unwrap();
+
+    assert!(matches!(
+        runner.start(Vec::new()),
+        Err(ZapcodeError::AllocationLimitExceeded)
+    ));
+}
+
+#[test]
+fn test_generator_handler_allocation_limit_is_not_catchable() {
+    let code = r#"
+        function* values() {
+            try {
+                try {
+                    try {
+                        try {
+                            try { yield 1; } catch (e) {}
+                        } catch (e) {}
+                    } catch (e) {}
+                } catch (e) {}
+            } catch (e) {}
+        }
+        const iterator = values();
+        iterator.next();
+        let outcome = 1;
+        try { iterator.next(); } catch (e) { outcome = 999; }
+        outcome
+    "#;
+
+    let run_with_limit = |max_allocations| {
+        let runner = ZapcodeRun::new(
+            code.to_string(),
+            Vec::new(),
+            Vec::new(),
+            ResourceLimits {
+                max_allocations,
+                ..ResourceLimits::default()
+            },
+        )
+        .unwrap();
+        runner.start(Vec::new())
+    };
+
+    assert!(matches!(
+        run_with_limit(27),
+        Err(ZapcodeError::AllocationLimitExceeded)
+    ));
+    assert!(matches!(
+        run_with_limit(512),
+        Ok(VmState::Complete(Value::Int(1)))
+    ));
+}
+
+#[test]
+fn test_stack_overflow_is_not_catchable() {
+    let runner = ZapcodeRun::new(
+        r#"
+        function recurse() { recurse(); }
+        let caught = false;
+        try { recurse(); } catch (e) { caught = true; }
+        caught
+        "#
+        .to_string(),
+        Vec::new(),
+        Vec::new(),
+        ResourceLimits {
+            max_stack_depth: 8,
+            ..ResourceLimits::default()
+        },
+    )
+    .unwrap();
+
+    assert!(matches!(
+        runner.start(Vec::new()),
+        Err(ZapcodeError::StackOverflow(_))
+    ));
+}
 
 #[test]
 fn test_try_catch() {

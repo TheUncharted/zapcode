@@ -50,10 +50,22 @@ impl ResourceTracker {
     }
 
     pub fn track_allocation(&mut self, limits: &ResourceLimits) -> crate::error::Result<()> {
-        self.allocations += 1;
-        if self.allocations > limits.max_allocations {
+        self.track_allocations(limits, 1)
+    }
+
+    pub fn track_allocations(
+        &mut self,
+        limits: &ResourceLimits,
+        count: usize,
+    ) -> crate::error::Result<()> {
+        let allocations = self
+            .allocations
+            .checked_add(count)
+            .ok_or(crate::ZapcodeError::AllocationLimitExceeded)?;
+        if allocations > limits.max_allocations {
             return Err(crate::ZapcodeError::AllocationLimitExceeded);
         }
+        self.allocations = allocations;
         Ok(())
     }
 
